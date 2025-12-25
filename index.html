@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>焼肉じゅん - 写真・動画共有サイト</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    }
+    .file-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const state = {
+      isAdmin: false,
+      isParticipant: false,
+      groups: {},
+      currentGroup: '',
+      sessionToken: '',
+      sessionExpiry: null,
+      uploaderName: '',
+      selectedFiles: [],
+      filterName: '',
+      loginAttempts: {},
+      error: ''
+    };
+
+    const SESSION_TIMEOUT = 30 * 60 * 1000;
+    const MAX_LOGIN_ATTEMPTS = 5;
+    const LOCKOUT_TIME = 15 * 60 * 1000;
+
+    function hashPassword(password) {
+      let hash = 0;
+      for (let i = 0; i < password.length; i++) {
+        const char = password.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return hash.toString();
+    }
+
+    function generateToken() {
+      return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    function loadData() {
+      const saved = localStorage.getItem('yakinikuJunData');
+      if (saved) {
+        try {
+          state.groups = JSON.parse(saved);
+        } catch (e) {
+          console.error('データの読み込みに失敗しました');
+        }
+      }
+    }
+
+    function saveData() {
+      localStorage.setItem('yakinikuJunData', JSON.stringify(state.groups));
+    }
+
+    function checkLoginAttempts(identifier) {
+      const attempts = state.loginAttempts[identifier];
+      if (attempts && attempts.count >= MAX_LOGIN_ATTEMPTS) {
+        const timeSinceLastAttempt = Date.now() - attempts.lastAttempt;
+        if (timeSinceLastAttempt < LOCKOUT_TIME) {
+          const remainingTime = Math.ceil((LOCKOUT_TIME - timeSinceLastAttempt) / 60000);
+          return { locked: true, remainingTime };
+        } else {
+          delete state.loginAttempts[identifier];
+        }
+      }
+      return { locked: false };
+    }
+
+    function recordLoginAttempt(identifier, success) {
+      if (success) {
+        delete state.loginAttempts[identifier];
+      } else {
+        const current = state.loginAttempts[identifier] || { count: 0, lastAttempt: 0 };
+        state.loginAttempts[identifier] = {
+          count: current.count + 1,
+          lastAttempt: Date.now()
+        };
+      }
+    }
+
+    function checkPasswordStrength(password) {
+      if (password.length < 8) {
+        return { valid: false, message: 'パスワードは8文字以上にしてください' };
+      }
+      if (!/[0-9]/.test(password)) {
+        return { valid: false, message: 'パスワードに数字を含めてください' };
+      }
+      if (!/[a-zA-Z]/.test(password)) {
+        return { valid: false, message: 'パスワードに英字を含めてください' };
+      }
+      return { valid: true };
+    }
+
+    function handleAdminLogin(password) {
+      const lockStatus = checkLoginAttempts('admin');
+      if (lockStatus.locked) {
+        state.error = `ログインが一時的にロックされています。${lockStatus.remainingTime}分後に再試行してください。`;
+        render();
+        return;
+      }
+
+      if (password === '20061030') {
+        state.isAdmin = true;
+        state.sessionToken = generateToken();
+        state.sessionExpiry = Date.now() + SESSION_TIMEOUT;
+        state.error = '';
+        recordLoginAttempt('admin', true);
+        render();
+      } else {
+        recordLoginAttempt('admin', false);
+        const remainingAttempts = MAX_LOGIN_ATTEMPTS - (state.loginAttempts['admin']?.count || 0);
+        state.error = `管理者パスワードが正しくありません（残り${remainingAttempts}回の試行）`;
+        render();
+      }
+    }
+
+    function handleCreateGroup(groupName, groupPassword) {
+      if (!groupName || !groupPassword) {
+        state.error = 'グループ名とパスワードを入力してください';
+        render();
+        return;
+      }
+
+      if (groupName.length < 3) {
+        state.error = 'グループ名は3文字以上にしてください';
+        render();
+        return;
+      }
+
+      if (!/^[a-zA-Z0-9\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+$/.test(groupName)) {
+        state.error = 'グループ名に特殊文字は使用できません';
+        render();
+        return;
+      }
+
+      const passwordCheck = checkPasswordStrength(groupPassword);
+      if (!passwordCheck.valid) {
+        state.error = passwordCheck.message;
+        render();
+        return;
+      }
+
+      if (state.groups[groupName]) {
+        state.error = 'このグループ名は既に存在します';
+        render();
+        return;
+      }
+
+      state.groups[groupName] = {
+        password: hashPassword(groupPassword),
+        files: [],
+        createdAt: Date.now()
+      };
+      saveData();
+      state.error = '';
+      render();
+    }
+
+    function handleParticipantLogin(groupName, password) {
+      const lockStatus = checkLoginAttempts(`group_${groupName}`);
+      if (lockStatus.locked) {
+        state.error = `ログインが一時的にロックされています。${lockStatus.remainingTime}分後に再試行してください。`;
+        render();
+        return;
+      }
+
+      if (!groupName || !password) {
+        state.error = 'グループ名とパスワードを入力してください';
+        render();
+        return;
+      }
+
+      if (!state.groups[groupName]) {
+        state.error = 'グループが存在しません';
+        recordLoginAttempt(`group_${groupName}`, false);
+        render();
+        return;
+      }
+
+      if (state.groups[groupName].password !== hashPassword(password)) {
+        recordLoginAttempt(`group_${groupName}`, false);
+        const remainingAttempts = MAX_LOGIN_ATTEMPTS - (state.loginAttempts[`group_${groupName}`]?.count || 0);
+        state.error = `パスワードが正しくありません（残り${remainingAttempts}回の試行）`;
+        render();
+        return;
+      }
+
+      state.isParticipant = true;
+      state.currentGroup = groupName;
+      state.sessionToken = generateToken();
+      state.sessionExpiry = Date.now() + SESSION_TIMEOUT;
+      state.error = '';
+      recordLoginAttempt(`group_${groupName}`, true);
+      render();
+    }
+
+    function handleFileUpload(files, uploaderName) {
+      if (!uploaderName || uploaderName.trim().length === 0) {
+        state.error = '名前を入力してください';
+        render();
+        return;
+      }
+
+      if (uploaderName.length > 20) {
+        state.error = '名前は20文字以内にしてください';
+        render();
+        return;
+      }
+
+      if (/<script|javascript:|onerror=/i.test(uploaderName)) {
+        state.error = '不正な文字が含まれています';
+        render();
+        return;
+      }
+
+      const MAX_FILE_SIZE = 50 * 1024 * 1024;
+      const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime'];
+
+      for (let file of files) {
+        if (file.size > MAX_FILE_SIZE) {
+          state.error = `ファイルサイズは50MB以下にしてください: ${file.name}`;
+          render();
+          return;
+        }
+        if (!ALLOWED_TYPES.includes(file.type)) {
+          state.error = `サポートされていないファイル形式です: ${file.name}`;
+          render();
+          return;
+        }
+      }
+
+      Array.from(files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const newFile = {
+            id: Date.now() + Math.random(),
+            name: file.name.replace(/[<>:"/\\|?*]/g, ''),
+            uploader: uploaderName.trim(),
+            type: file.type.startsWith('image/') ? 'image' : 'video',
+            url: e.target.result,
+            date: new Date().toLocaleString('ja-JP')
+          };
+
+          state.groups[state.currentGroup].files.push(newFile);
+          saveData();
+          render();
+        };
+        reader.readAsDataURL(file);
+      });
+
+      state.error = '';
+    }
+
+    function handleDeleteFile(fileId) {
+      if (!state.isAdmin) {
+        state.error = '削除権限がありません';
+        render();
+        return;
+      }
+
+      if (confirm('このファイルを削除しますか?')) {
+        state.groups[state.currentGroup].files = state.groups[state.currentGroup].files.filter(f => f.id !== fileId);
+        saveData();
+        render();
+      }
+    }
+
+    function handleDownloadAll() {
+      const filesToDownload = state.filterName
+        ? state.groups[state.currentGroup].files.filter(f => f.uploader === state.filterName)
+        : state.groups[state.currentGroup].files;
+
+      filesToDownload.forEach((file, index) => {
+        setTimeout(() => {
+          const a = document.createElement('a');
+          a.href = file.url;
+          a.download = file.name;
+          a.click();
+        }, index * 200);
+      });
+    }
+
+    function handleDownloadSelected() {
+      state.selectedFiles.forEach((fileId, index) => {
+        setTimeout(() => {
+          const file = state.groups[state.currentGroup].files.find(f => f.id === fileId);
+          if (file) {
+            const a = document.createElement('a');
+            a.href = file.url;
+            a.download = file.name;
+            a.click();
+          }
+        }, index * 200);
+      });
+      state.selectedFiles = [];
+      render();
+    }
+
+    function handleLogout() {
+      state.isAdmin = false;
+      state.isParticipant = false;
+      state.currentGroup = '';
+      state.sessionToken = '';
+      state.sessionExpiry = null;
+      state.uploaderName = '';
+      state.selectedFiles = [];
+      state.filterName = '';
+      render();
+    }
+
+    function toggleFileSelection(fileId) {
+      const index = state.selectedFiles.indexOf(fileId);
+      if (index > -1) {
+        state.selectedFiles.splice(index, 1);
+      } else {
+        state.selectedFiles.push(fileId);
+      }
+      render();
+    }
+
+    setInterval(() => {
+      if (state.sessionExpiry && Date.now() > state.sessionExpiry) {
+        handleLogout();
+        state.error = 'セッションがタイムアウトしました。再度ログインしてください。';
+        render();
+      }
+    }, 60000);
+
+    function render() {
+      const app = document.getElementById('app');
+
+      if (!state.isAdmin && !state.isParticipant) {
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
+            <div class="max-w-md mx-auto">
+              <div class="bg-white rounded-2xl shadow-xl p-8">
+                <div class="flex items-center justify-center mb-4">
+                  <svg class="w-12 h-12 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                  </svg>
+                </div>
+                <h1 class="text-3xl font-bold text-center mb-2 text-red-700">焼肉じゅん</h1>
+                <p class="text-center text-gray-600 mb-2">写真・動画共有サイト</p>
+                <p class="text-center text-xs text-gray-500 mb-8"></p>
+                
+                <div class="space-y-6">
+                  <div>
+                    <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                      </svg>
+                      グループ作成
+                    </h2>
+                    <input
+                      type="password"
+                      id="adminPassword"
+                      placeholder="パスワード"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    />
+                    <button
+                      onclick="handleAdminLogin(document.getElementById('adminPassword').value)"
+                      class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
+                    >
+                      管理者として入室
+                    </button>
+                  </div>
+
+                  <div class="border-t pt-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                      </svg>
+                      グループに参加
+                    </h2>
+                    <input
+                      type="text"
+                      id="participantGroup"
+                      placeholder="グループ名"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    />
+                    <input
+                      type="password"
+                      id="participantPassword"
+                      placeholder="グループパスワード"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    />
+                    <button
+                      onclick="handleParticipantLogin(document.getElementById('participantGroup').value, document.getElementById('participantPassword').value)"
+                      class="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition"
+                    >
+                      参加者として入室
+                    </button>
+                  </div>
+                </div>
+
+                ${state.error ? `
+                  <div class="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                    ${state.error}
+                  </div>
+                ` : ''}
+
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (state.isAdmin && !state.currentGroup) {
+        const groupList = Object.keys(state.groups);
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
+            <div class="max-w-4xl mx-auto">
+              <div class="bg-white rounded-2xl shadow-xl p-8">
+                <div class="flex justify-between items-center mb-6">
+                  <div>
+                    <h1 class="text-3xl font-bold text-red-700">管理者ページ</h1>
+                    <p class="text-gray-600">グループを作成または選択してください</p>
+                  </div>
+                  <button
+                    onclick="handleLogout()"
+                    class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition"
+                  >
+                    ログアウト
+                  </button>
+                </div>
+
+                <div class="bg-orange-50 p-6 rounded-xl mb-8">
+                  <h2 class="text-xl font-semibold mb-4">新規グループ作成</h2>
+                  <input
+                    type="text"
+                    id="newGroupName"
+                    placeholder="グループ名（3文字以上、英数字・日本語のみ）"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
+                  />
+                  <input
+                    type="password"
+                    id="newGroupPassword"
+                    placeholder="グループパスワード（8文字以上、英数字含む）"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
+                  />
+                  <div class="mb-3 p-3 bg-blue-50 rounded-lg text-sm text-blue-800">
+                    <p class="font-semibold mb-1">パスワード要件:</p>
+                    <ul class="list-disc list-inside text-xs">
+                      <li>8文字以上</li>
+                      <li>英字を含む</li>
+                      <li>数字を含む</li>
+                    </ul>
+                  </div>
+                  <button
+                    onclick="handleCreateGroup(document.getElementById('newGroupName').value, document.getElementById('newGroupPassword').value)"
+                    class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
+                  >
+                    グループを作成
+                  </button>
+                  ${state.error ? `
+                    <div class="mt-3 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                      ${state.error}
+                    </div>
+                  ` : ''}
+                </div>
+
+                <div>
+                  <h2 class="text-xl font-semibold mb-4">既存のグループ</h2>
+                  <div class="grid gap-3">
+                    ${groupList.length === 0 ? `
+                      <p class="text-gray-500 text-center py-8">まだグループがありません</p>
+                    ` : groupList.map(groupName => `
+                      <button
+                        onclick="state.currentGroup = '${groupName}'; render();"
+                        class="p-4 bg-gray-50 hover:bg-gray-100 rounded-lg text-left transition flex justify-between items-center"
+                      >
+                        <span class="font-medium">${groupName}</span>
+                        <span class="text-sm text-gray-600">
+                          ${state.groups[groupName].files.length}件のファイル
+                        </span>
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const filteredFiles = state.filterName
+        ? state.groups[state.currentGroup].files.filter(f => f.uploader === state.filterName)
+        : state.groups[state.currentGroup].files;
+
+      const uploaders = [...new Set(state.groups[state.currentGroup].files.map(f => f.uploader))];
+
+      app.innerHTML = `
+        <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
+          <div class="max-w-6xl mx-auto">
+            <div class="bg-white rounded-2xl shadow-xl p-8">
+              <div class="flex justify-between items-center mb-6">
+                <div>
+                  <h1 class="text-3xl font-bold text-red-700">焼肉じゅん - ${state.currentGroup}</h1>
+                  <p class="text-gray-600">${state.isAdmin ? '管理者' : '参加者'}モード</p>
+                </div>
+                <div class="flex gap-2">
+                  ${state.isAdmin ? `
+                    <button
+                      onclick="state.currentGroup = ''; render();"
+                      class="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition"
+                    >
+                      グループ一覧へ
+                    </button>
+                  ` : ''}
+                  <button
+                    onclick="handleLogout()"
+                    class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition"
+                  >
+                    ログアウト
+                  </button>
+                </div>
+              </div>
+
+              <div class="bg-orange-50 p-6 rounded-xl mb-8">
+                <h2 class="text-xl font-semibold mb-4">写真・動画をアップロード</h2>
+                <input
+                  type="text"
+                  id="uploaderName"
+                  value="${state.uploaderName}"
+                  oninput="state.uploaderName = this.value"
+                  placeholder="あなたの名前（20文字以内）"
+                  maxlength="20"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
+                />
+                <input
+                  type="file"
+                  id="fileInput"
+                  multiple
+                  accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime"
+                  onchange="handleFileUpload(this.files, state.uploaderName)"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white"
+                />
+                <p class="text-xs text-gray-500 mt-2">
+                  対応形式: JPEG, PNG, GIF, WebP, MP4, MOV（最大50MB）
+                </p>
+                ${state.error ? `
+                  <div class="mt-3 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                    ${state.error}
+                  </div>
+                ` : ''}
+              </div>
+
+              <div class="mb-6">
+                <h2 class="text-xl font-semibold mb-4">投稿者で絞り込み</h2>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    onclick="state.filterName = ''; render();"
+                    class="px-4 py-2 rounded-lg transition ${state.filterName === '' ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
+                  >
+                    すべて (${state.groups[state.currentGroup].files.length})
+                  </button>
+                  ${uploaders.map(name => `
+                    <button
+                      onclick="state.filterName = '${name}'; render();"
+                      class="px-4 py-2 rounded-lg transition ${state.filterName === name ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
+                    >
+                      ${name} (${state.groups[state.currentGroup].files.filter(f => f.uploader === name).length})
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+
+              <div class="flex gap-3 mb-6">
+                <button
+                  onclick="handleDownloadAll()"
+                  ${filteredFiles.length === 0 ? 'disabled' : ''}
+                  class="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  すべてダウンロード (${filteredFiles.length})
+                </button>
+                <button
+                  onclick="handleDownloadSelected()"
+                  ${state.selectedFiles.length === 0 ? 'disabled' : ''}
+                  class="flex-1 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  選択をダウンロード (${state.selectedFiles.length})
+                </button>
+              </div>
+
+              <div class="file-grid">
+                ${filteredFiles.length === 0 ? `
+                  <div class="col-span-full text-center py-12 text-gray-500">
+                    まだファイルがありません
+                  </div>
+                ` : filteredFiles.map(file => `
+                  <div class="relative border-2 rounded-lg overflow-hidden ${state.selectedFiles.includes(file.id) ? 'border-blue-500 ring-2 ring-blue-300' : 'border-gray-200'}">
+                    <div 
+                      onclick="toggleFileSelection(${file.id})"
+                      class="aspect-square bg-gray-100 flex items-center justify-center cursor-pointer"
+                    >
+                      ${file.type === 'image' ? `
+                        <img src="${file.url}" alt="${file.name}" class="w-full h-full object-cover" />
+                      ` : `
+                        <div class="flex flex-col items-center justify-center text-gray-600">
+                          <svg class="w-12 h-12 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                          </svg>
+                          <p class="text-xs">動画</p>
+                        </div>
+                      `}
+                    </div>
+                    <div class="p-2 bg-white">
+                      <p class="text-xs font-medium truncate">${file.uploader}</p>
+                      <p class="text-xs text-gray-500">${file.date}</p>
+                    </div>
+                    ${state.isAdmin ? `
+                      <button
+                        onclick="event.stopPropagation(); handleDeleteFile(${file.id})"
+                        class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full hover:bg-red-700 transition shadow-lg"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                      </button>
+                    ` : ''}
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    loadData();
+    render();
+  </script>
+</body>
+</html>
