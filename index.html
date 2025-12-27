@@ -32,28 +32,10 @@
   <div id="app"></div>
 
   <script>
-    // インメモリストレージ（window.storageが使えない場合の代替）
-    const memoryStorage = {
-      data: {},
-      async get(key, shared) {
-        return this.data[key] ? { key, value: this.data[key], shared } : null;
-      },
-      async set(key, value, shared) {
-        this.data[key] = value;
-        return { key, value, shared };
-      },
-      async delete(key, shared) {
-        delete this.data[key];
-        return { key, deleted: true, shared };
-      },
-      async list(prefix, shared) {
-        const keys = Object.keys(this.data).filter(k => !prefix || k.startsWith(prefix));
-        return { keys, prefix, shared };
-      }
-    };
-
-    // ストレージAPIの確認と設定
-    const storage = window.storage || memoryStorage;
+    // JSONBin.io APIキー（無料プラン）
+    const API_KEY = '$2a$10$C9w4FqJxRYr8VzF9K.Pu3uGxoYQZ.9L5HbN8TmOqKfE3aLqWpR7ZO';
+    const BIN_ID = '677093a2e41b4d34e46b3e77'; // デフォルトのBin ID
+    const API_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 
     const state = {
       isAdmin: false,
@@ -66,13 +48,59 @@
       filterName: '',
       loginAttempts: {},
       error: '',
-      lastUpdate: 0
+      lastUpdate: 0,
+      serverReady: false,
+      allData: { groups: {} }
     };
 
     const SESSION_TIMEOUT = 30 * 60 * 1000;
     const MAX_LOGIN_ATTEMPTS = 5;
     const LOCKOUT_TIME = 15 * 60 * 1000;
     const UPDATE_INTERVAL = 10000;
+
+    // サーバーからデータを取得
+    async function loadFromServer() {
+      try {
+        const response = await fetch(`${API_URL}/latest`, {
+          method: 'GET',
+          headers: {
+            'X-Master-Key': API_KEY
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          state.allData = data.record || { groups: {} };
+          console.log('✅ サーバーからデータを読み込みました');
+          return true;
+        }
+      } catch (e) {
+        console.error('サーバー読み込みエラー:', e);
+      }
+      return false;
+    }
+
+    // サーバーにデータを保存
+    async function saveToServer() {
+      try {
+        const response = await fetch(API_URL, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Master-Key': API_KEY
+          },
+          body: JSON.stringify(state.allData)
+        });
+        
+        if (response.ok) {
+          console.log('✅ サーバーに保存しました');
+          return true;
+        }
+      } catch (e) {
+        console.error('サーバー保存エラー:', e);
+      }
+      return false;
+    }
 
     function hashPassword(password) {
       let hash = 0;
@@ -90,58 +118,24 @@
         .join('');
     }
 
-    async function getGroup(groupName) {
-      try {
-        const result = await storage.get(`group:${groupName}`, true);
-        if (result && result.value) {
-          return JSON.parse(result.value);
-        }
-        return null;
-      } catch (e) {
-        if (e.message && e.message.includes('not found')) {
-          return null;
-        }
-        console.error('グループの取得に失敗:', e);
-        return null;
-      }
+    function getGroup(groupName) {
+      return state.allData.groups[groupName] || null;
     }
 
     async function saveGroup(groupName, groupData) {
-      try {
-        await storage.set(
-          `group:${groupName}`, 
-          JSON.stringify(groupData),
-          true
-        );
-        return true;
-      } catch (error) {
-        console.error('保存に失敗:', error);
-        return false;
-      }
+      state.allData.groups[groupName] = groupData;
+      return await saveToServer();
     }
 
-    async function listGroups() {
-      try {
-        const keys = await storage.list('group:', true);
-        const groups = [];
-        if (keys && keys.keys) {
-          for (const key of keys.keys) {
-            const groupName = key.replace('group:', '');
-            const group = await getGroup(groupName);
-            if (group) {
-              groups.push({
-                name: groupName,
-                fileCount: group.files ? group.files.length : 0,
-                createdAt: group.createdAt
-              });
-            }
-          }
-        }
-        return groups;
-      } catch (e) {
-        console.error('グループ一覧の取得に失敗:', e);
-        return [];
-      }
+    function listGroups() {
+      return Object.keys(state.allData.groups).map(name => {
+        const group = state.allData.groups[name];
+        return {
+          name: name,
+          fileCount: group.files ? group.files.length : 0,
+          createdAt: group.createdAt
+        };
+      });
     }
 
     function checkLoginAttempts(identifier) {
@@ -232,40 +226,31 @@
         return;
       }
 
-      try {
-        const existing = await getGroup(groupName);
-        if (existing) {
-          state.error = 'このグループ名は既に存在します';
-          render();
-          return;
-        }
+      await loadFromServer();
+      
+      const existing = getGroup(groupName);
+      if (existing) {
+        state.error = 'このグループ名は既に存在します';
+        render();
+        return;
+      }
 
-        const newGroup = {
-          password: hashPassword(groupPassword),
-          files: [],
-          createdAt: Date.now()
-        };
-        
-        const result = await storage.set(
-          `group:${groupName}`, 
-          JSON.stringify(newGroup),
-          true
-        );
-        
-        if (result) {
-          state.error = '';
-          alert(`グループ「${groupName}」を作成しました！`);
-          document.getElementById('newGroupName').value = '';
-          document.getElementById('newGroupPassword').value = '';
-          await new Promise(resolve => setTimeout(resolve, 500));
-          render();
-        } else {
-          state.error = 'グループの作成に失敗しました。もう一度お試しください。';
-          render();
-        }
-      } catch (error) {
-        console.error('グループ作成エラー:', error);
-        state.error = `エラー: ${error.message || 'グループの作成に失敗しました'}`;
+      const newGroup = {
+        password: hashPassword(groupPassword),
+        files: [],
+        createdAt: Date.now()
+      };
+      
+      const success = await saveGroup(groupName, newGroup);
+      
+      if (success) {
+        state.error = '';
+        alert(`グループ「${groupName}」を作成しました！`);
+        document.getElementById('newGroupName').value = '';
+        document.getElementById('newGroupPassword').value = '';
+        render();
+      } else {
+        state.error = 'グループの作成に失敗しました。もう一度お試しください。';
         render();
       }
     }
@@ -284,7 +269,9 @@
         return;
       }
 
-      const group = await getGroup(groupName);
+      await loadFromServer();
+      
+      const group = getGroup(groupName);
       if (!group) {
         state.error = 'グループが存在しません';
         recordLoginAttempt(`group_${groupName}`, false);
@@ -328,12 +315,12 @@
         return;
       }
 
-      const MAX_FILE_SIZE = 10 * 1024 * 1024;
+      const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MBに制限（サーバー負荷軽減）
       const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime'];
 
       for (let file of files) {
         if (file.size > MAX_FILE_SIZE) {
-          state.error = `ファイルサイズは10MB以下にしてください: ${file.name}`;
+          state.error = `ファイルサイズは5MB以下にしてください: ${file.name}`;
           render();
           return;
         }
@@ -344,7 +331,9 @@
         }
       }
 
-      const group = await getGroup(state.currentGroup);
+      await loadFromServer();
+      
+      const group = getGroup(state.currentGroup);
       if (!group) {
         state.error = 'グループが見つかりません';
         render();
@@ -367,7 +356,6 @@
             };
 
             group.files.push(newFile);
-            await saveGroup(state.currentGroup, group);
             uploadCount++;
             resolve();
           };
@@ -375,6 +363,7 @@
         });
       }
 
+      await saveGroup(state.currentGroup, group);
       state.error = '';
       document.getElementById('fileInput').value = '';
       alert(`${uploadCount}件のファイルをアップロードしました！`);
@@ -389,7 +378,8 @@
       }
 
       if (confirm('このファイルを削除しますか？')) {
-        const group = await getGroup(state.currentGroup);
+        await loadFromServer();
+        const group = getGroup(state.currentGroup);
         if (group) {
           group.files = group.files.filter(f => f.id !== fileId);
           await saveGroup(state.currentGroup, group);
@@ -410,7 +400,8 @@
     }
 
     async function handleDownloadSelected(fileIds) {
-      const group = await getGroup(state.currentGroup);
+      await loadFromServer();
+      const group = getGroup(state.currentGroup);
       if (!group) return;
       
       fileIds.forEach((fileId, index) => {
@@ -451,7 +442,7 @@
     }
 
     async function refreshCurrentGroup() {
-      await getGroup(state.currentGroup);
+      await loadFromServer();
       state.lastUpdate = Date.now();
       render();
     }
@@ -481,11 +472,26 @@
     async function render() {
       const app = document.getElementById('app');
 
+      if (!state.serverReady) {
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 flex items-center justify-center">
+            <div class="text-center">
+              <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
+              <p class="text-gray-600">サーバーに接続中...</p>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
       if (!state.isAdmin && !state.isParticipant) {
         app.innerHTML = `
           <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-4 md:p-8">
             <div class="max-w-md mx-auto">
               <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8 fade-in">
+                <div class="mb-4 p-3 bg-green-50 border border-green-200 text-green-800 rounded-lg text-sm">
+                  ✅ 全デバイスでデータ共有が有効です（クラウドストレージ使用）
+                </div>
                 <div class="flex items-center justify-center mb-4">
                   <svg class="w-12 h-12 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -555,8 +561,8 @@
                 <div class="mt-6 p-4 bg-blue-50 rounded-lg text-xs text-blue-900">
                   <p class="font-semibold mb-2">✨ 機能:</p>
                   <ul class="space-y-1 list-disc list-inside">
-                    <li>全員とリアルタイム共有（10秒自動更新）</li>
-                    <li>写真・動画アップロード（最大10MB）</li>
+                    <li>全デバイスでリアルタイム共有（10秒自動更新）</li>
+                    <li>写真・動画アップロード（最大5MB）</li>
                     <li>投稿者別フィルタリング</li>
                     <li>一括・選択ダウンロード</li>
                   </ul>
@@ -569,7 +575,7 @@
       }
 
       if (state.isAdmin && !state.currentGroup) {
-        const groups = await listGroups();
+        const groups = listGroups();
         app.innerHTML = `
           <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-4 md:p-8">
             <div class="max-w-4xl mx-auto">
@@ -626,7 +632,7 @@
                   <div class="flex justify-between items-center mb-4">
                     <h2 class="text-xl font-semibold">既存のグループ</h2>
                     <button
-                      onclick="render()"
+                      onclick="refreshCurrentGroup(); render();"
                       class="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition text-sm flex items-center gap-1"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -661,7 +667,7 @@
         return;
       }
 
-      const group = await getGroup(state.currentGroup);
+      const group = getGroup(state.currentGroup);
       if (!group) {
         state.error = 'グループが見つかりません';
         state.currentGroup = '';
@@ -839,7 +845,15 @@
       `;
     }
 
-    render();
+    // アプリ起動時の初期化
+    (async function init() {
+      const success = await loadFromServer();
+      state.serverReady = true;
+      if (!success) {
+        console.warn('サーバーからのデータ読み込みに失敗しましたが、続行します');
+      }
+      render();
+    })();
   </script>
 </body>
 </html>
