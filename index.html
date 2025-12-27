@@ -32,6 +32,29 @@
   <div id="app"></div>
 
   <script>
+    // インメモリストレージ（window.storageが使えない場合の代替）
+    const memoryStorage = {
+      data: {},
+      async get(key, shared) {
+        return this.data[key] ? { key, value: this.data[key], shared } : null;
+      },
+      async set(key, value, shared) {
+        this.data[key] = value;
+        return { key, value, shared };
+      },
+      async delete(key, shared) {
+        delete this.data[key];
+        return { key, deleted: true, shared };
+      },
+      async list(prefix, shared) {
+        const keys = Object.keys(this.data).filter(k => !prefix || k.startsWith(prefix));
+        return { keys, prefix, shared };
+      }
+    };
+
+    // ストレージAPIの確認と設定
+    const storage = window.storage || memoryStorage;
+
     const state = {
       isAdmin: false,
       isParticipant: false,
@@ -69,19 +92,23 @@
 
     async function getGroup(groupName) {
       try {
-        const result = await window.storage.get(`group:${groupName}`, true);
+        const result = await storage.get(`group:${groupName}`, true);
         if (result && result.value) {
           return JSON.parse(result.value);
         }
+        return null;
       } catch (e) {
+        if (e.message && e.message.includes('not found')) {
+          return null;
+        }
         console.error('グループの取得に失敗:', e);
+        return null;
       }
-      return null;
     }
 
     async function saveGroup(groupName, groupData) {
       try {
-        await window.storage.set(
+        await storage.set(
           `group:${groupName}`, 
           JSON.stringify(groupData),
           true
@@ -95,7 +122,7 @@
 
     async function listGroups() {
       try {
-        const keys = await window.storage.list('group:', true);
+        const keys = await storage.list('group:', true);
         const groups = [];
         if (keys && keys.keys) {
           for (const key of keys.keys) {
@@ -205,28 +232,40 @@
         return;
       }
 
-      const existing = await getGroup(groupName);
-      if (existing) {
-        state.error = 'このグループ名は既に存在します';
-        render();
-        return;
-      }
+      try {
+        const existing = await getGroup(groupName);
+        if (existing) {
+          state.error = 'このグループ名は既に存在します';
+          render();
+          return;
+        }
 
-      const newGroup = {
-        password: hashPassword(groupPassword),
-        files: [],
-        createdAt: Date.now()
-      };
-      
-      const success = await saveGroup(groupName, newGroup);
-      if (success) {
-        state.error = '';
-        alert(`グループ「${groupName}」を作成しました！`);
-        document.getElementById('newGroupName').value = '';
-        document.getElementById('newGroupPassword').value = '';
-        render();
-      } else {
-        state.error = 'グループの作成に失敗しました';
+        const newGroup = {
+          password: hashPassword(groupPassword),
+          files: [],
+          createdAt: Date.now()
+        };
+        
+        const result = await storage.set(
+          `group:${groupName}`, 
+          JSON.stringify(newGroup),
+          true
+        );
+        
+        if (result) {
+          state.error = '';
+          alert(`グループ「${groupName}」を作成しました！`);
+          document.getElementById('newGroupName').value = '';
+          document.getElementById('newGroupPassword').value = '';
+          await new Promise(resolve => setTimeout(resolve, 500));
+          render();
+        } else {
+          state.error = 'グループの作成に失敗しました。もう一度お試しください。';
+          render();
+        }
+      } catch (error) {
+        console.error('グループ作成エラー:', error);
+        state.error = `エラー: ${error.message || 'グループの作成に失敗しました'}`;
         render();
       }
     }
@@ -461,7 +500,7 @@
                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
                       </svg>
-                      グループ作成
+                      管理者ログイン
                     </h2>
                     <input
                       type="password"
@@ -474,7 +513,7 @@
                       onclick="handleAdminLogin(document.getElementById('adminPassword').value)"
                       class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium"
                     >
-                      ログイン
+                      管理者として入室
                     </button>
                   </div>
 
@@ -502,7 +541,7 @@
                       onclick="handleParticipantLogin(document.getElementById('participantGroup').value, document.getElementById('participantPassword').value)"
                       class="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition font-medium"
                     >
-                      グループに参加
+                      参加者として入室
                     </button>
                   </div>
                 </div>
@@ -513,6 +552,13 @@
                   </div>
                 ` : ''}
 
+                <div class="mt-6 p-4 bg-blue-50 rounded-lg text-xs text-blue-900">
+                  <p class="font-semibold mb-2">✨ 機能:</p>
+                  <ul class="space-y-1 list-disc list-inside">
+                    <li>全員とリアルタイム共有（10秒自動更新）</li>
+                    <li>写真・動画アップロード（最大10MB）</li>
+                    <li>投稿者別フィルタリング</li>
+                    <li>一括・選択ダウンロード</li>
                   </ul>
                 </div>
               </div>
