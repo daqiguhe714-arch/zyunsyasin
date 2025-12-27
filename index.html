@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>焼肉じゅん - 写真・動画共有サイト</title>
+  <title>焼肉じゅん - 写真・動画共有</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * {
@@ -19,6 +19,13 @@
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
       gap: 1rem;
     }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in {
+      animation: fadeIn 0.3s ease-in;
+    }
   </style>
 </head>
 <body>
@@ -28,7 +35,6 @@
     const state = {
       isAdmin: false,
       isParticipant: false,
-      groups: {},
       currentGroup: '',
       sessionToken: '',
       sessionExpiry: null,
@@ -37,13 +43,13 @@
       filterName: '',
       loginAttempts: {},
       error: '',
-      loading: false,
-      preventRender: false  // 自動更新時のレンダリング抑制フラグ
+      lastUpdate: 0
     };
 
     const SESSION_TIMEOUT = 30 * 60 * 1000;
     const MAX_LOGIN_ATTEMPTS = 5;
     const LOCKOUT_TIME = 15 * 60 * 1000;
+    const UPDATE_INTERVAL = 10000;
 
     function hashPassword(password) {
       let hash = 0;
@@ -61,56 +67,53 @@
         .join('');
     }
 
-    async function loadData(silent = false) {
+    async function getGroup(groupName) {
       try {
-        if (!silent) {
-          state.loading = true;
-          render();
+        const result = await window.storage.get(`group:${groupName}`, true);
+        if (result && result.value) {
+          return JSON.parse(result.value);
         }
-        
-        state.groups = {}; // リセットして最新データを取得
-        
-        const keys = await window.storage.list('group:', true);
-        console.log('Found keys:', keys);
-        
-        if (keys && keys.keys && keys.keys.length > 0) {
-          for (const key of keys.keys) {
-            try {
-              const result = await window.storage.get(key, true);
-              console.log(`Loading ${key}:`, result);
-              if (result && result.value) {
-                const groupName = key.replace('group:', '');
-                state.groups[groupName] = JSON.parse(result.value);
-              }
-            } catch (e) {
-              console.error(`Failed to load group ${key}:`, e);
-            }
-          }
-        } else {
-          console.log('No groups found in storage');
-        }
-        
-        console.log('Loaded groups:', Object.keys(state.groups));
-      } catch (error) {
-        console.error('データの読み込みに失敗しました:', error);
-      } finally {
-        if (!silent) {
-          state.loading = false;
-          render();
-        }
+      } catch (e) {
+        console.error('グループの取得に失敗:', e);
       }
+      return null;
     }
 
-    async function saveGroup(groupName) {
+    async function saveGroup(groupName, groupData) {
       try {
         await window.storage.set(
           `group:${groupName}`, 
-          JSON.stringify(state.groups[groupName]),
+          JSON.stringify(groupData),
           true
         );
+        return true;
       } catch (error) {
-        console.error('データの保存に失敗しました:', error);
-        state.error = 'データの保存に失敗しました';
+        console.error('保存に失敗:', error);
+        return false;
+      }
+    }
+
+    async function listGroups() {
+      try {
+        const keys = await window.storage.list('group:', true);
+        const groups = [];
+        if (keys && keys.keys) {
+          for (const key of keys.keys) {
+            const groupName = key.replace('group:', '');
+            const group = await getGroup(groupName);
+            if (group) {
+              groups.push({
+                name: groupName,
+                fileCount: group.files ? group.files.length : 0,
+                createdAt: group.createdAt
+              });
+            }
+          }
+        }
+        return groups;
+      } catch (e) {
+        console.error('グループ一覧の取得に失敗:', e);
+        return [];
       }
     }
 
@@ -171,7 +174,7 @@
       } else {
         recordLoginAttempt('admin', false);
         const remainingAttempts = MAX_LOGIN_ATTEMPTS - (state.loginAttempts['admin']?.count || 0);
-        state.error = `管理者パスワードが正しくありません（残り${remainingAttempts}回の試行）`;
+        state.error = `管理者パスワードが正しくありません（残り${remainingAttempts}回）`;
         render();
       }
     }
@@ -202,21 +205,30 @@
         return;
       }
 
-      if (state.groups[groupName]) {
+      const existing = await getGroup(groupName);
+      if (existing) {
         state.error = 'このグループ名は既に存在します';
         render();
         return;
       }
 
-      state.groups[groupName] = {
+      const newGroup = {
         password: hashPassword(groupPassword),
         files: [],
         createdAt: Date.now()
       };
       
-      await saveGroup(groupName);
-      state.error = '';
-      render();
+      const success = await saveGroup(groupName, newGroup);
+      if (success) {
+        state.error = '';
+        alert(`グループ「${groupName}」を作成しました！`);
+        document.getElementById('newGroupName').value = '';
+        document.getElementById('newGroupPassword').value = '';
+        render();
+      } else {
+        state.error = 'グループの作成に失敗しました';
+        render();
+      }
     }
 
     async function handleParticipantLogin(groupName, password) {
@@ -233,24 +245,18 @@
         return;
       }
 
-      // 必ず最新データを読み込み
-      state.loading = true;
-      render();
-      await loadData();
-
-      if (!state.groups[groupName]) {
-        state.error = 'グループが存在しません。グループ名を確認してください。';
+      const group = await getGroup(groupName);
+      if (!group) {
+        state.error = 'グループが存在しません';
         recordLoginAttempt(`group_${groupName}`, false);
-        state.loading = false;
         render();
         return;
       }
 
-      if (state.groups[groupName].password !== hashPassword(password)) {
+      if (group.password !== hashPassword(password)) {
         recordLoginAttempt(`group_${groupName}`, false);
         const remainingAttempts = MAX_LOGIN_ATTEMPTS - (state.loginAttempts[`group_${groupName}`]?.count || 0);
-        state.error = `パスワードが正しくありません（残り${remainingAttempts}回の試行）`;
-        state.loading = false;
+        state.error = `パスワードが正しくありません（残り${remainingAttempts}回）`;
         render();
         return;
       }
@@ -260,7 +266,6 @@
       state.sessionToken = generateToken();
       state.sessionExpiry = Date.now() + SESSION_TIMEOUT;
       state.error = '';
-      state.loading = false;
       recordLoginAttempt(`group_${groupName}`, true);
       render();
     }
@@ -284,12 +289,12 @@
         return;
       }
 
-      const MAX_FILE_SIZE = 50 * 1024 * 1024;
+      const MAX_FILE_SIZE = 10 * 1024 * 1024;
       const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime'];
 
       for (let file of files) {
         if (file.size > MAX_FILE_SIZE) {
-          state.error = `ファイルサイズは50MB以下にしてください: ${file.name}`;
+          state.error = `ファイルサイズは10MB以下にしてください: ${file.name}`;
           render();
           return;
         }
@@ -300,7 +305,14 @@
         }
       }
 
-      let uploadedCount = 0;
+      const group = await getGroup(state.currentGroup);
+      if (!group) {
+        state.error = 'グループが見つかりません';
+        render();
+        return;
+      }
+
+      let uploadCount = 0;
       for (const file of Array.from(files)) {
         await new Promise((resolve) => {
           const reader = new FileReader();
@@ -311,13 +323,13 @@
               uploader: uploaderName.trim(),
               type: file.type.startsWith('image/') ? 'image' : 'video',
               url: e.target.result,
-              date: new Date().toLocaleString('ja-JP')
+              date: new Date().toLocaleString('ja-JP'),
+              size: file.size
             };
 
-            state.groups[state.currentGroup].files.push(newFile);
-            await saveGroup(state.currentGroup);
-            uploadedCount++;
-            render();
+            group.files.push(newFile);
+            await saveGroup(state.currentGroup, group);
+            uploadCount++;
             resolve();
           };
           reader.readAsDataURL(file);
@@ -325,6 +337,9 @@
       }
 
       state.error = '';
+      document.getElementById('fileInput').value = '';
+      alert(`${uploadCount}件のファイルをアップロードしました！`);
+      await refreshCurrentGroup();
     }
 
     async function handleDeleteFile(fileId) {
@@ -334,39 +349,41 @@
         return;
       }
 
-      if (confirm('このファイルを削除しますか?')) {
-        state.groups[state.currentGroup].files = state.groups[state.currentGroup].files.filter(f => f.id !== fileId);
-        await saveGroup(state.currentGroup);
-        render();
+      if (confirm('このファイルを削除しますか？')) {
+        const group = await getGroup(state.currentGroup);
+        if (group) {
+          group.files = group.files.filter(f => f.id !== fileId);
+          await saveGroup(state.currentGroup, group);
+          await refreshCurrentGroup();
+        }
       }
     }
 
-    function handleDownloadAll() {
-      const filesToDownload = state.filterName
-        ? state.groups[state.currentGroup].files.filter(f => f.uploader === state.filterName)
-        : state.groups[state.currentGroup].files;
-
-      filesToDownload.forEach((file, index) => {
+    function handleDownloadAll(files) {
+      files.forEach((file, index) => {
         setTimeout(() => {
           const a = document.createElement('a');
           a.href = file.url;
           a.download = file.name;
           a.click();
-        }, index * 200);
+        }, index * 300);
       });
     }
 
-    function handleDownloadSelected() {
-      state.selectedFiles.forEach((fileId, index) => {
+    async function handleDownloadSelected(fileIds) {
+      const group = await getGroup(state.currentGroup);
+      if (!group) return;
+      
+      fileIds.forEach((fileId, index) => {
         setTimeout(() => {
-          const file = state.groups[state.currentGroup].files.find(f => f.id === fileId);
+          const file = group.files.find(f => f.id === fileId);
           if (file) {
             const a = document.createElement('a');
             a.href = file.url;
             a.download = file.name;
             a.click();
           }
-        }, index * 200);
+        }, index * 300);
       });
       state.selectedFiles = [];
       render();
@@ -394,24 +411,25 @@
       render();
     }
 
-    async function refreshData() {
-      if (state.currentGroup || state.isAdmin) {
-        // バックグラウンドで更新（画面は再描画しない）
-        await loadData(true);
-        
-        // 入力フォーカス中でなければ画面を更新
+    async function refreshCurrentGroup() {
+      await getGroup(state.currentGroup);
+      state.lastUpdate = Date.now();
+      render();
+    }
+
+    setInterval(async () => {
+      if (state.currentGroup && (state.isAdmin || state.isParticipant)) {
         const activeElement = document.activeElement;
-        const isInputFocused = activeElement && (
+        const isInputActive = activeElement && (
           activeElement.tagName === 'INPUT' || 
-          activeElement.tagName === 'TEXTAREA' ||
-          activeElement.type === 'file'
+          activeElement.tagName === 'TEXTAREA'
         );
         
-        if (!isInputFocused && !state.preventRender) {
-          render();
+        if (!isInputActive) {
+          await refreshCurrentGroup();
         }
       }
-    }
+    }, UPDATE_INTERVAL);
 
     setInterval(() => {
       if (state.sessionExpiry && Date.now() > state.sessionExpiry) {
@@ -421,64 +439,47 @@
       }
     }, 60000);
 
-    // 5秒ごとに自動更新（リアルタイム性向上）
-    setInterval(refreshData, 5000);
-
-    function render() {
+    async function render() {
       const app = document.getElementById('app');
-
-      if (state.loading) {
-        app.innerHTML = `
-          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 flex items-center justify-center">
-            <div class="text-center">
-              <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-red-600 mx-auto mb-4"></div>
-              <p class="text-gray-600">読み込み中...</p>
-            </div>
-          </div>
-        `;
-        return;
-      }
 
       if (!state.isAdmin && !state.isParticipant) {
         app.innerHTML = `
-          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
+          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-4 md:p-8">
             <div class="max-w-md mx-auto">
-              <div class="bg-white rounded-2xl shadow-xl p-8">
+              <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8 fade-in">
                 <div class="flex items-center justify-center mb-4">
                   <svg class="w-12 h-12 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                   </svg>
                 </div>
                 <h1 class="text-3xl font-bold text-center mb-2 text-red-700">焼肉じゅん</h1>
-                <p class="text-center text-gray-600 mb-2">写真・動画共有サイト</p>
-                <p class="text-center text-xs text-gray-500 mb-8">リアルタイム共有版</p>
+                <p class="text-center text-gray-600 mb-8">写真・動画共有システム</p>
                 
                 <div class="space-y-6">
                   <div>
-                    <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
                       </svg>
-                      管理者ログイン
+                      グループ作成
                     </h2>
                     <input
                       type="password"
                       id="adminPassword"
                       placeholder="管理者パスワード"
                       class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
-                      onfocus="state.preventRender = true"
-                      onblur="state.preventRender = false"
+                      onkeypress="if(event.key==='Enter') handleAdminLogin(this.value)"
                     />
                     <button
                       onclick="handleAdminLogin(document.getElementById('adminPassword').value)"
-                      class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
+                      class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium"
                     >
-                      管理者として入室
+                      ログイン
                     </button>
                   </div>
 
                   <div class="border-t pt-6">
-                    <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
                       </svg>
@@ -489,54 +490,29 @@
                       id="participantGroup"
                       placeholder="グループ名"
                       class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
-                      onfocus="state.preventRender = true"
-                      onblur="state.preventRender = false"
                     />
                     <input
                       type="password"
                       id="participantPassword"
                       placeholder="グループパスワード"
                       class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
-                      onfocus="state.preventRender = true"
-                      onblur="state.preventRender = false"
+                      onkeypress="if(event.key==='Enter') handleParticipantLogin(document.getElementById('participantGroup').value, this.value)"
                     />
                     <button
                       onclick="handleParticipantLogin(document.getElementById('participantGroup').value, document.getElementById('participantPassword').value)"
-                      class="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition"
+                      class="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition font-medium"
                     >
-                      参加者として入室
+                      グループに参加
                     </button>
                   </div>
                 </div>
 
                 ${state.error ? `
-                  <div class="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                  <div class="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
                     ${state.error}
                   </div>
                 ` : ''}
 
-                <div class="mt-6 p-4 bg-blue-50 rounded-lg text-xs text-blue-800">
-                  <p class="font-semibold mb-2">✨ リアルタイム共有機能:</p>
-                  <ul class="space-y-1 list-disc list-inside">
-                    <li>グループ作成後、すぐに全員と共有</li>
-                    <li>アップロードした写真・動画を自動同期</li>
-                    <li>5秒ごとに自動更新（リアルタイム反映）</li>
-                  </ul>
-                  <p class="mt-3 text-xs font-semibold">📱 使い方:</p>
-                  <p class="text-xs">1. 管理者がグループを作成</p>
-                  <p class="text-xs">2. グループ名とパスワードを参加者に共有</p>
-                  <p class="text-xs">3. 参加者がグループ名とパスワードでログイン</p>
-                </div>
-
-                <div class="mt-4 p-4 bg-gray-50 rounded-lg text-xs text-gray-600">
-                  <p class="font-semibold mb-2">セキュリティ機能:</p>
-                  <ul class="space-y-1 list-disc list-inside">
-                    <li>パスワードハッシュ化保存</li>
-                    <li>ログイン試行回数制限（5回まで）</li>
-                    <li>自動ロックアウト（15分間）</li>
-                    <li>セッションタイムアウト（30分）</li>
-                    <li>ファイル形式・サイズ検証</li>
-                    <li>入力値サニタイゼーション</li>
                   </ul>
                 </div>
               </div>
@@ -547,33 +523,22 @@
       }
 
       if (state.isAdmin && !state.currentGroup) {
-        const groupList = Object.keys(state.groups);
+        const groups = await listGroups();
         app.innerHTML = `
-          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
+          <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-4 md:p-8">
             <div class="max-w-4xl mx-auto">
-              <div class="bg-white rounded-2xl shadow-xl p-8">
+              <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8 fade-in">
                 <div class="flex justify-between items-center mb-6">
                   <div>
-                    <h1 class="text-3xl font-bold text-red-700">管理者ページ</h1>
-                    <p class="text-gray-600">グループを作成または選択してください</p>
+                    <h1 class="text-2xl md:text-3xl font-bold text-red-700">管理者ページ</h1>
+                    <p class="text-sm text-gray-600">グループを作成または選択してください</p>
                   </div>
-                  <div class="flex gap-2">
-                    <button
-                      onclick="loadData()"
-                      class="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition flex items-center gap-2"
-                    >
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                      </svg>
-                      更新
-                    </button>
-                    <button
-                      onclick="handleLogout()"
-                      class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition"
-                    >
-                      ログアウト
-                    </button>
-                  </div>
+                  <button
+                    onclick="handleLogout()"
+                    class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-sm"
+                  >
+                    ログアウト
+                  </button>
                 </div>
 
                 <div class="bg-orange-50 p-6 rounded-xl mb-8">
@@ -582,21 +547,17 @@
                     type="text"
                     id="newGroupName"
                     placeholder="グループ名（3文字以上、英数字・日本語のみ）"
-                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
-                    onfocus="state.preventRender = true"
-                    onblur="state.preventRender = false"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
                   />
                   <input
                     type="password"
                     id="newGroupPassword"
                     placeholder="グループパスワード（8文字以上、英数字含む）"
-                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
-                    onfocus="state.preventRender = true"
-                    onblur="state.preventRender = false"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
                   />
                   <div class="mb-3 p-3 bg-blue-50 rounded-lg text-sm text-blue-800">
                     <p class="font-semibold mb-1">パスワード要件:</p>
-                    <ul class="list-disc list-inside text-xs">
+                    <ul class="list-disc list-inside text-xs space-y-0.5">
                       <li>8文字以上</li>
                       <li>英字を含む</li>
                       <li>数字を含む</li>
@@ -604,30 +565,44 @@
                   </div>
                   <button
                     onclick="handleCreateGroup(document.getElementById('newGroupName').value, document.getElementById('newGroupPassword').value)"
-                    class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
+                    class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium"
                   >
-                    グループを作成して全員と共有
+                    グループを作成
                   </button>
                   ${state.error ? `
-                    <div class="mt-3 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                    <div class="mt-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
                       ${state.error}
                     </div>
                   ` : ''}
                 </div>
 
                 <div>
-                  <h2 class="text-xl font-semibold mb-4">既存のグループ</h2>
+                  <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">既存のグループ</h2>
+                    <button
+                      onclick="render()"
+                      class="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition text-sm flex items-center gap-1"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                      </svg>
+                      更新
+                    </button>
+                  </div>
                   <div class="grid gap-3">
-                    ${groupList.length === 0 ? `
+                    ${groups.length === 0 ? `
                       <p class="text-gray-500 text-center py-8">まだグループがありません</p>
-                    ` : groupList.map(groupName => `
+                    ` : groups.map(group => `
                       <button
-                        onclick="state.currentGroup = '${groupName}'; render();"
+                        onclick="state.currentGroup = '${group.name}'; render();"
                         class="p-4 bg-gray-50 hover:bg-gray-100 rounded-lg text-left transition flex justify-between items-center"
                       >
-                        <span class="font-medium">${groupName}</span>
-                        <span class="text-sm text-gray-600">
-                          ${state.groups[groupName].files.length}件のファイル
+                        <div>
+                          <span class="font-medium text-lg">${group.name}</span>
+                          <p class="text-xs text-gray-500">${new Date(group.createdAt).toLocaleString('ja-JP')}</p>
+                        </div>
+                        <span class="text-sm text-gray-600 bg-white px-3 py-1 rounded-full">
+                          ${group.fileCount}件
                         </span>
                       </button>
                     `).join('')}
@@ -640,25 +615,33 @@
         return;
       }
 
-      const filteredFiles = state.filterName
-        ? state.groups[state.currentGroup].files.filter(f => f.uploader === state.filterName)
-        : state.groups[state.currentGroup].files;
+      const group = await getGroup(state.currentGroup);
+      if (!group) {
+        state.error = 'グループが見つかりません';
+        state.currentGroup = '';
+        render();
+        return;
+      }
 
-      const uploaders = [...new Set(state.groups[state.currentGroup].files.map(f => f.uploader))];
+      const filteredFiles = state.filterName
+        ? group.files.filter(f => f.uploader === state.filterName)
+        : group.files;
+
+      const uploaders = [...new Set(group.files.map(f => f.uploader))];
 
       app.innerHTML = `
-        <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-8">
-          <div class="max-w-6xl mx-auto">
-            <div class="bg-white rounded-2xl shadow-xl p-8">
-              <div class="flex justify-between items-center mb-6">
+        <div class="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 p-4 md:p-8">
+          <div class="max-w-7xl mx-auto">
+            <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8 fade-in">
+              <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                 <div>
-                  <h1 class="text-3xl font-bold text-red-700">焼肉じゅん - ${state.currentGroup}</h1>
-                  <p class="text-gray-600">${state.isAdmin ? '管理者' : '参加者'}モード</p>
+                  <h1 class="text-2xl md:text-3xl font-bold text-red-700">焼肉じゅん - ${state.currentGroup}</h1>
+                  <p class="text-sm text-gray-600">${state.isAdmin ? '管理者' : '参加者'}モード • ${group.files.length}件のファイル</p>
                 </div>
                 <div class="flex gap-2">
                   <button
-                    onclick="refreshData()"
-                    class="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition flex items-center gap-2"
+                    onclick="refreshCurrentGroup()"
+                    class="px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition text-sm flex items-center gap-1"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -668,141 +651,148 @@
                   ${state.isAdmin ? `
                     <button
                       onclick="state.currentGroup = ''; render();"
-                      class="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition"
+                      class="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-sm"
                     >
-                      グループ一覧へ
+                      グループ一覧
                     </button>
                   ` : ''}
                   <button
                     onclick="handleLogout()"
-                    class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition"
+                    class="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-sm"
                   >
                     ログアウト
                   </button>
                 </div>
               </div>
 
-              <div class="mb-4 p-3 bg-green-50 text-green-800 rounded-lg text-sm flex items-center gap-2">
+              <div class="mb-4 p-3 bg-green-50 border border-green-200 text-green-800 rounded-lg text-sm flex items-center gap-2">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                <span>このグループは全員と共有されています。5秒ごとに自動更新されます。</span>
+                <span>全員と共有中 • 10秒ごとに自動更新</span>
               </div>
 
-              <div class="bg-orange-50 p-6 rounded-xl mb-8">
-                <h2 class="text-xl font-semibold mb-4">写真・動画をアップロード</h2>
+              <div class="bg-orange-50 p-6 rounded-xl mb-6">
+                <h2 class="text-xl font-semibold mb-4">ファイルをアップロード</h2>
                 <input
                   type="text"
                   id="uploaderName"
+                  placeholder="あなたの名前"
                   value="${state.uploaderName}"
                   oninput="state.uploaderName = this.value"
-                  placeholder="あなたの名前（20文字以内）"
-                  maxlength="20"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3"
-                  onfocus="state.preventRender = true"
-                  onblur="state.preventRender = false"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
                 />
                 <input
                   type="file"
                   id="fileInput"
                   multiple
-                  accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime"
-                  onchange="handleFileUpload(this.files, state.uploaderName)"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white"
+                  accept="image/*,video/*"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg mb-3 focus:ring-2 focus:ring-red-500 focus:outline-none"
                 />
-                <p class="text-xs text-gray-500 mt-2">
-                  対応形式: JPEG, PNG, GIF, WebP, MP4, MOV（最大50MB）
-                </p>
+                <button
+                  onclick="handleFileUpload(document.getElementById('fileInput').files, document.getElementById('uploaderName').value)"
+                  class="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium"
+                >
+                  アップロード
+                </button>
                 ${state.error ? `
-                  <div class="mt-3 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                  <div class="mt-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
                     ${state.error}
                   </div>
                 ` : ''}
               </div>
 
               <div class="mb-6">
-                <h2 class="text-xl font-semibold mb-4">投稿者で絞り込み</h2>
-                <div class="flex flex-wrap gap-2">
+                <div class="flex flex-wrap gap-2 mb-4">
                   <button
                     onclick="state.filterName = ''; render();"
-                    class="px-4 py-2 rounded-lg transition ${state.filterName === '' ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
+                    class="px-4 py-2 rounded-lg transition ${!state.filterName ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
                   >
-                    すべて (${state.groups[state.currentGroup].files.length})
+                    全て (${group.files.length})
                   </button>
-                  ${uploaders.map(name => `
+                  ${uploaders.map(uploader => `
                     <button
-                      onclick="state.filterName = '${name}'; render();"
-                      class="px-4 py-2 rounded-lg transition ${state.filterName === name ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
+                      onclick="state.filterName = '${uploader}'; render();"
+                      class="px-4 py-2 rounded-lg transition ${state.filterName === uploader ? 'bg-red-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}"
                     >
-                      ${name} (${state.groups[state.currentGroup].files.filter(f => f.uploader === name).length})
+                      ${uploader} (${group.files.filter(f => f.uploader === uploader).length})
                     </button>
                   `).join('')}
                 </div>
-              </div>
 
-              <div class="flex gap-3 mb-6">
-                <button
-                  onclick="handleDownloadAll()"
-                  ${filteredFiles.length === 0 ? 'disabled' : ''}
-                  class="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
-                >
-                  すべてダウンロード (${filteredFiles.length})
-                </button>
-                <button
-                  onclick="handleDownloadSelected()"
-                  ${state.selectedFiles.length === 0 ? 'disabled' : ''}
-                  class="flex-1 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
-                >
-                  選択をダウンロード (${state.selectedFiles.length})
-                </button>
-              </div>
-
-              <div class="file-grid">
-                ${filteredFiles.length === 0 ? `
-                  <div class="col-span-full text-center py-12 text-gray-500">
-                    まだファイルがありません
-                  </div>
-                ` : filteredFiles.map(file => `
-                  <div class="relative border-2 rounded-lg overflow-hidden ${state.selectedFiles.includes(file.id) ? 'border-blue-500 ring-2 ring-blue-300' : 'border-gray-200'}">
-                    <div 
-                      onclick="toggleFileSelection(${file.id})"
-                      class="aspect-square bg-gray-100 flex items-center justify-center cursor-pointer"
+                ${filteredFiles.length > 0 ? `
+                  <div class="flex gap-2 mb-4">
+                    <button
+                      onclick="handleDownloadAll(${JSON.stringify(filteredFiles).replace(/"/g, '&quot;')})"
+                      class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm flex items-center gap-1"
                     >
-                      ${file.type === 'image' ? `
-                        <img src="${file.url}" alt="${file.name}" class="w-full h-full object-cover" />
-                      ` : `
-                        <div class="flex flex-col items-center justify-center text-gray-600">
-                          <svg class="w-12 h-12 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                          </svg>
-                          <p class="text-xs">動画</p>
-                        </div>
-                      `}
-                    </div>
-                    <div class="p-2 bg-white">
-                      <p class="text-xs font-medium truncate">${file.uploader}</p>
-                      <p class="text-xs text-gray-500">${file.date}</p>
-                    </div>
-                    ${state.isAdmin ? `
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                      </svg>
+                      全てダウンロード
+                    </button>
+                    ${state.selectedFiles.length > 0 ? `
                       <button
-                        onclick="event.stopPropagation(); handleDeleteFile(${file.id})"
-                        class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full hover:bg-red-700 transition shadow-lg"
+                        onclick="handleDownloadSelected(${JSON.stringify(state.selectedFiles)})"
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm flex items-center gap-1"
                       >
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                         </svg>
+                        選択中(${state.selectedFiles.length})をダウンロード
                       </button>
                     ` : ''}
                   </div>
-                `).join('')}
+                ` : ''}
               </div>
+
+              ${filteredFiles.length === 0 ? `
+                <div class="text-center py-12 text-gray-500">
+                  <svg class="w-16 h-16 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                  </svg>
+                  <p>まだファイルがありません</p>
+                </div>
+              ` : `
+                <div class="file-grid">
+                  ${filteredFiles.reverse().map(file => `
+                    <div class="bg-gray-50 rounded-lg overflow-hidden shadow hover:shadow-lg transition fade-in">
+                      <div class="relative">
+                        ${file.type === 'image' ? `
+                          <img src="${file.url}" alt="${file.name}" class="w-full h-48 object-cover" />
+                        ` : `
+                          <video src="${file.url}" controls class="w-full h-48 object-cover bg-black"></video>
+                        `}
+                        <input
+                          type="checkbox"
+                          ${state.selectedFiles.includes(file.id) ? 'checked' : ''}
+                          onchange="toggleFileSelection(${file.id})"
+                          class="absolute top-2 left-2 w-5 h-5 cursor-pointer"
+                        />
+                      </div>
+                      <div class="p-3">
+                        <p class="font-medium text-sm mb-1 truncate">${file.name}</p>
+                        <p class="text-xs text-gray-600 mb-1">投稿者: ${file.uploader}</p>
+                        <p class="text-xs text-gray-500">${file.date}</p>
+                        ${state.isAdmin ? `
+                          <button
+                            onclick="handleDeleteFile(${file.id})"
+                            class="mt-2 w-full px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded text-xs transition"
+                          >
+                            削除
+                          </button>
+                        ` : ''}
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
             </div>
           </div>
         </div>
       `;
     }
 
-    loadData();
     render();
   </script>
 </body>
