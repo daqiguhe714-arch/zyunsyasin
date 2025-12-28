@@ -15,8 +15,11 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
+        // Firebase設定
+        const FIREBASE_URL = "https://photo-sharing-c10db-default-rtdb.firebaseio.com";
+
         // アイコンコンポーネント
-                    const Upload = () => (
+        const Upload = () => (
             <svg className="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
@@ -42,19 +45,26 @@
 
         const Plus = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
             </svg>
         );
 
         const LogIn = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
             </svg>
         );
 
         const X = ({ className = "w-5 h-5" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        );
+
+        const Loader = () => (
+            <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
         );
 
@@ -62,16 +72,17 @@
             const [view, setView] = useState('home');
             const [groups, setGroups] = useState({});
             const [currentGroup, setCurrentGroup] = useState(null);
+            const [loading, setLoading] = useState(false);
             const [formData, setFormData] = useState({
                 groupName: '',
                 password: '',
                 uploaderName: ''
             });
 
-            // LocalStorageからデータを読み込み、定期的に更新
+            // Firebase Realtime Databaseからデータを取得
             useEffect(() => {
                 loadGroups();
-                const interval = setInterval(loadGroups, 2000);
+                const interval = setInterval(loadGroups, 3000);
                 return () => clearInterval(interval);
             }, []);
 
@@ -85,28 +96,41 @@
                 }
             }, [groups]);
 
-            const loadGroups = () => {
+            const loadGroups = async () => {
                 try {
-                    const savedGroups = localStorage.getItem('photoGroups');
-                    if (savedGroups) {
-                        setGroups(JSON.parse(savedGroups));
+                    const response = await fetch(`${FIREBASE_URL}/groups.json`);
+                    const data = await response.json();
+                    if (data) {
+                        setGroups(data);
                     }
                 } catch (error) {
                     console.error('Error loading groups:', error);
                 }
             };
 
-            const saveGroups = (newGroups) => {
+            const saveGroups = async (newGroups) => {
                 try {
-                    localStorage.setItem('photoGroups', JSON.stringify(newGroups));
+                    setLoading(true);
+                    const response = await fetch(`${FIREBASE_URL}/groups.json`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newGroups)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('保存に失敗しました');
+                    }
+                    
                     setGroups(newGroups);
                 } catch (error) {
                     console.error('Error saving groups:', error);
-                    alert('保存に失敗しました。ファイルサイズが大きすぎる可能性があります。');
+                    alert('保存に失敗しました');
+                } finally {
+                    setLoading(false);
                 }
             };
 
-            const createGroup = () => {
+            const createGroup = async () => {
                 if (!formData.groupName || !formData.password) {
                     alert('グループ名とパスワードを入力してください');
                     return;
@@ -125,7 +149,7 @@
                 };
 
                 const newGroups = { ...groups, [formData.groupName]: newGroup };
-                saveGroups(newGroups);
+                await saveGroups(newGroups);
                 setFormData({ groupName: '', password: '', uploaderName: '' });
                 alert('グループを作成しました！');
                 setView('home');
@@ -162,14 +186,14 @@
                     return;
                 }
 
-                // ファイルサイズチェック（3MB制限 - LocalStorageの制限を考慮）
-                if (file.size > 3 * 1024 * 1024) {
-                    alert('ファイルサイズは3MB以下にしてください');
+                if (file.size > 2 * 1024 * 1024) {
+                    alert('ファイルサイズは2MB以下にしてください');
                     return;
                 }
 
+                setLoading(true);
                 const reader = new FileReader();
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     const fileData = {
                         name: file.name,
                         type: file.type,
@@ -185,31 +209,29 @@
                     updatedGroup.members[formData.uploaderName].push(fileData);
 
                     const newGroups = { ...groups, [currentGroup.name]: updatedGroup };
-                    saveGroups(newGroups);
+                    await saveGroups(newGroups);
                     setCurrentGroup(updatedGroup);
                     alert('アップロードしました！');
-                    
-                    // ファイル入力をリセット
                     e.target.value = '';
                 };
                 reader.readAsDataURL(file);
             };
 
-            const deleteFile = (memberName, fileIndex) => {
+            const deleteFile = async (memberName, fileIndex) => {
                 if (!confirm('この写真/動画を削除しますか？')) {
                     return;
                 }
 
+                setLoading(true);
                 const updatedGroup = { ...currentGroup };
                 updatedGroup.members[memberName].splice(fileIndex, 1);
                 
-                // メンバーのファイルが全て削除されたら、メンバーごと削除
                 if (updatedGroup.members[memberName].length === 0) {
                     delete updatedGroup.members[memberName];
                 }
 
                 const newGroups = { ...groups, [currentGroup.name]: updatedGroup };
-                saveGroups(newGroups);
+                await saveGroups(newGroups);
                 setCurrentGroup(updatedGroup);
             };
 
@@ -219,10 +241,19 @@
                 setView('home');
             };
 
-            // ホーム画面
+            const LoadingOverlay = () => loading && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 flex items-center gap-3">
+                        <Loader />
+                        <span className="text-gray-700 font-medium">処理中...</span>
+                    </div>
+                </div>
+            );
+
             if (view === 'home') {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
+                        <LoadingOverlay />
                         <div className="max-w-md mx-auto">
                             <div className="bg-white rounded-xl shadow-xl p-5 mb-4">
                                 <div className="text-center mb-6">
@@ -231,6 +262,7 @@
                                     </div>
                                     <h1 className="text-2xl font-bold text-gray-800 mb-1">写真・動画共有</h1>
                                     <p className="text-sm text-gray-600">グループで簡単に共有</p>
+                                    <p className="text-xs text-green-600 mt-2">🌐 リアルタイム同期対応</p>
                                 </div>
 
                                 <div className="space-y-3">
@@ -278,10 +310,10 @@
                 );
             }
 
-            // グループ作成画面
             if (view === 'create') {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
+                        <LoadingOverlay />
                         <div className="max-w-md mx-auto">
                             <div className="bg-white rounded-xl shadow-xl p-5">
                                 <button
@@ -323,7 +355,8 @@
 
                                     <button
                                         onClick={createGroup}
-                                        className="w-full py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg font-bold hover:shadow-lg transition-all"
+                                        disabled={loading}
+                                        className="w-full py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg font-bold hover:shadow-lg transition-all disabled:opacity-50"
                                     >
                                         グループを作成
                                     </button>
@@ -334,7 +367,6 @@
                 );
             }
 
-            // グループ参加画面
             if (view === 'join') {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
@@ -390,10 +422,10 @@
                 );
             }
 
-            // グループ内画面
             if (view === 'group' && currentGroup) {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
+                        <LoadingOverlay />
                         <div className="max-w-2xl mx-auto">
                             <div className="bg-white rounded-xl shadow-xl p-4 mb-4">
                                 <div className="flex justify-between items-center mb-4">
@@ -428,9 +460,10 @@
                                             accept="image/*,video/*"
                                             onChange={uploadFile}
                                             className="hidden"
+                                            disabled={loading}
                                         />
                                         <Upload />
-                                        アップロード
+                                        アップロード (最大2MB)
                                     </label>
                                 </div>
                             </div>
@@ -465,6 +498,7 @@
                                                     <button
                                                         onClick={() => deleteFile(memberName, idx)}
                                                         className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                        disabled={loading}
                                                     >
                                                         <X className="w-3 h-3" />
                                                     </button>
