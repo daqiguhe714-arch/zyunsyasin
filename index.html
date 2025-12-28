@@ -15,54 +15,47 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // Firebase設定
+        // Firebase設定 (末尾のスラッシュを削除)
         const FIREBASE_URL = "https://photo-sharing-c10db-default-rtdb.firebaseio.com";
 
-        // アイコンコンポーネント
+        // --- アイコンコンポーネント ---
         const Upload = () => (
             <svg className="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
         );
-
         const Users = () => (
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
         );
-
         const Image = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
         );
-
         const Video = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
         );
-
         const Plus = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
             </svg>
         );
-
         const LogIn = ({ className = "w-12 h-12" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
             </svg>
         );
-
         const X = ({ className = "w-5 h-5" }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
         );
-
         const Loader = () => (
-            <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+            <svg className="animate-spin h-5 w-5 text-indigo-600" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
@@ -79,52 +72,42 @@
                 uploaderName: ''
             });
 
-            // Firebase Realtime Databaseからデータを取得
-            useEffect(() => {
-                loadGroups();
-                const interval = setInterval(loadGroups, 3000);
-                return () => clearInterval(interval);
-            }, []);
-
-            // 現在のグループが更新された場合、自動でリロード
-            useEffect(() => {
-                if (currentGroup) {
-                    const updatedGroup = groups[currentGroup.name];
-                    if (updatedGroup) {
-                        setCurrentGroup(updatedGroup);
-                    }
-                }
-            }, [groups]);
-
+            // データの読み込み
             const loadGroups = async () => {
                 try {
                     const response = await fetch(`${FIREBASE_URL}/groups.json`);
                     const data = await response.json();
-                    if (data) {
-                        setGroups(data);
-                    }
+                    setGroups(data || {});
                 } catch (error) {
                     console.error('Error loading groups:', error);
                 }
             };
 
-            const saveGroups = async (newGroups) => {
+            useEffect(() => {
+                loadGroups();
+                const interval = setInterval(loadGroups, 5000); // 5秒ごとに更新
+                return () => clearInterval(interval);
+            }, []);
+
+            // 現在入っているグループのデータが更新されたら状態を同期
+            useEffect(() => {
+                if (currentGroup && groups[currentGroup.name]) {
+                    setCurrentGroup(groups[currentGroup.name]);
+                }
+            }, [groups]);
+
+            const saveGroups = async (updatedGroups) => {
+                setLoading(true);
                 try {
-                    setLoading(true);
                     const response = await fetch(`${FIREBASE_URL}/groups.json`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(newGroups)
+                        body: JSON.stringify(updatedGroups)
                     });
-                    
-                    if (!response.ok) {
-                        throw new Error('保存に失敗しました');
-                    }
-                    
-                    setGroups(newGroups);
+                    if (!response.ok) throw new Error('Failed to save');
+                    setGroups(updatedGroups);
                 } catch (error) {
-                    console.error('Error saving groups:', error);
-                    alert('保存に失敗しました');
+                    alert('保存に失敗しました。');
                 } finally {
                     setLoading(false);
                 }
@@ -135,7 +118,6 @@
                     alert('グループ名とパスワードを入力してください');
                     return;
                 }
-
                 if (groups[formData.groupName]) {
                     alert('このグループ名は既に使用されています');
                     return;
@@ -148,40 +130,27 @@
                     createdAt: Date.now()
                 };
 
-                const newGroups = { ...groups, [formData.groupName]: newGroup };
-                await saveGroups(newGroups);
-                setFormData({ groupName: '', password: '', uploaderName: '' });
+                await saveGroups({ ...groups, [formData.groupName]: newGroup });
                 alert('グループを作成しました！');
                 setView('home');
+                setFormData({ ...formData, groupName: '', password: '' });
             };
 
             const joinGroup = () => {
-                if (!formData.groupName || !formData.password) {
-                    alert('グループ名とパスワードを入力してください');
-                    return;
-                }
-
                 const group = groups[formData.groupName];
-                if (!group) {
-                    alert('グループが見つかりません');
+                if (!group || group.password !== formData.password) {
+                    alert('グループ名またはパスワードが違います');
                     return;
                 }
-
-                if (group.password !== formData.password) {
-                    alert('パスワードが正しくありません');
-                    return;
-                }
-
                 setCurrentGroup(group);
                 setView('group');
-                setFormData({ groupName: '', password: '', uploaderName: '' });
             };
 
             const uploadFile = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
 
-                if (!formData.uploaderName) {
+                if (!formData.uploaderName.trim()) {
                     alert('名前を入力してください');
                     return;
                 }
@@ -202,220 +171,137 @@
                         uploader: formData.uploaderName
                     };
 
-                    const updatedGroup = { ...currentGroup };
-                    if (!updatedGroup.members[formData.uploaderName]) {
-                        updatedGroup.members[formData.uploaderName] = [];
+                    // グループデータの最新状態を取得して更新
+                    const updatedGroups = { ...groups };
+                    const group = { ...updatedGroups[currentGroup.name] };
+                    
+                    if (!group.members) group.members = {};
+                    if (!group.members[formData.uploaderName]) {
+                        group.members[formData.uploaderName] = [];
                     }
-                    updatedGroup.members[formData.uploaderName].push(fileData);
+                    
+                    group.members[formData.uploaderName].push(fileData);
+                    updatedGroups[currentGroup.name] = group;
 
-                    const newGroups = { ...groups, [currentGroup.name]: updatedGroup };
-                    await saveGroups(newGroups);
-                    setCurrentGroup(updatedGroup);
-                    alert('アップロードしました！');
+                    await saveGroups(updatedGroups);
+                    setCurrentGroup(group);
                     e.target.value = '';
                 };
                 reader.readAsDataURL(file);
             };
 
             const deleteFile = async (memberName, fileIndex) => {
-                if (!confirm('この写真/動画を削除しますか？')) {
-                    return;
-                }
+                if (!confirm('削除しますか？')) return;
 
-                setLoading(true);
-                const updatedGroup = { ...currentGroup };
-                updatedGroup.members[memberName].splice(fileIndex, 1);
+                const updatedGroups = { ...groups };
+                const group = { ...updatedGroups[currentGroup.name] };
                 
-                if (updatedGroup.members[memberName].length === 0) {
-                    delete updatedGroup.members[memberName];
+                group.members[memberName].splice(fileIndex, 1);
+                if (group.members[memberName].length === 0) {
+                    delete group.members[memberName];
                 }
 
-                const newGroups = { ...groups, [currentGroup.name]: updatedGroup };
-                await saveGroups(newGroups);
-                setCurrentGroup(updatedGroup);
-            };
-
-            const leaveGroup = () => {
-                setCurrentGroup(null);
-                setFormData({ groupName: '', password: '', uploaderName: '' });
-                setView('home');
+                updatedGroups[currentGroup.name] = group;
+                await saveGroups(updatedGroups);
+                setCurrentGroup(group);
             };
 
             const LoadingOverlay = () => loading && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 flex items-center gap-3">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-white p-6 rounded-xl flex items-center gap-3 shadow-2xl">
                         <Loader />
-                        <span className="text-gray-700 font-medium">処理中...</span>
+                        <span className="font-bold text-gray-700">処理中...</span>
                     </div>
                 </div>
             );
 
+            // --- 画面レンダリング ---
+            
             if (view === 'home') {
                 return (
-                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
+                    <div className="min-h-screen bg-slate-50 p-4">
                         <LoadingOverlay />
-                        <div className="max-w-md mx-auto">
-                            <div className="bg-white rounded-xl shadow-xl p-5 mb-4">
-                                <div className="text-center mb-6">
-                                    <div className="inline-block p-3 bg-indigo-100 rounded-full mb-3">
-                                        <Image className="w-8 h-8" />
-                                    </div>
-                                    <h1 className="text-2xl font-bold text-gray-800 mb-1">写真・動画共有</h1>
-                                    <p className="text-sm text-gray-600">グループで簡単に共有</p>
-                                    <p className="text-xs text-green-600 mt-2">🌐 リアルタイム同期対応</p>
-                                </div>
+                        <div className="max-w-md mx-auto space-y-4">
+                            <header className="text-center py-6">
+                                <h1 className="text-3xl font-black text-indigo-600">PHOTO HUB</h1>
+                                <p className="text-gray-500 text-sm">手軽に、みんなで、写真共有</p>
+                            </header>
 
-                                <div className="space-y-3">
-                                    <button
-                                        onClick={() => setView('create')}
-                                        className="w-full p-6 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl hover:shadow-lg transition-all"
-                                    >
-                                        <Plus className="mx-auto mb-2 w-10 h-10" />
-                                        <h3 className="text-lg font-bold mb-1">グループを作成</h3>
-                                        <p className="text-indigo-100 text-xs">管理者として新しいグループを作成</p>
-                                    </button>
-
-                                    <button
-                                        onClick={() => setView('join')}
-                                        className="w-full p-6 bg-gradient-to-r from-blue-500 to-cyan-600 text-white rounded-xl hover:shadow-lg transition-all"
-                                    >
-                                        <LogIn className="mx-auto mb-2 w-10 h-10" />
-                                        <h3 className="text-lg font-bold mb-1">グループに参加</h3>
-                                        <p className="text-blue-100 text-xs">既存のグループに参加して共有</p>
-                                    </button>
-                                </div>
+                            <div className="grid grid-cols-1 gap-4">
+                                <button onClick={() => setView('create')} className="bg-indigo-600 text-white p-6 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all text-left">
+                                    <Plus className="w-8 h-8 mb-2" />
+                                    <div className="font-bold text-lg">新しくグループを作る</div>
+                                    <div className="text-indigo-200 text-xs">イベントや旅行の共有に</div>
+                                </button>
+                                <button onClick={() => setView('join')} className="bg-white text-gray-800 p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all text-left">
+                                    <LogIn className="w-8 h-8 mb-2 text-indigo-600" />
+                                    <div className="font-bold text-lg">グループに参加する</div>
+                                    <div className="text-gray-400 text-xs">招待されたグループ名を入力</div>
+                                </button>
                             </div>
 
-                            {Object.keys(groups).length > 0 && (
-                                <div className="bg-white rounded-xl shadow-xl p-4">
-                                    <h2 className="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">
-                                        <Users className="w-5 h-5" />
-                                        既存のグループ
-                                    </h2>
-                                    <div className="space-y-2">
-                                        {Object.values(groups).map((group) => (
-                                            <div key={group.name} className="p-3 bg-gray-50 rounded-lg">
-                                                <h3 className="font-bold text-sm text-gray-800">{group.name}</h3>
-                                                <p className="text-xs text-gray-600">
-                                                    {Object.keys(group.members).length}人・
-                                                    {Object.values(group.members).flat().length}個
-                                                </p>
+                            <section className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                                <h2 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                                    <Users className="w-5 h-5" /> 稼働中のグループ
+                                </h2>
+                                <div className="space-y-2">
+                                    {Object.keys(groups).length === 0 ? (
+                                        <p className="text-gray-400 text-xs text-center py-4">まだグループがありません</p>
+                                    ) : (
+                                        Object.values(groups).map(g => (
+                                            <div key={g.name} className="flex justify-between items-center p-3 bg-gray-50 rounded-xl">
+                                                <span className="font-medium text-sm text-gray-700">{g.name}</span>
+                                                <span className="text-[10px] bg-gray-200 px-2 py-1 rounded-full text-gray-500">
+                                                    {g.members ? Object.keys(g.members).length : 0} メンバー
+                                                </span>
                                             </div>
-                                        ))}
-                                    </div>
+                                        ))
+                                    )}
                                 </div>
-                            )}
+                            </section>
                         </div>
                     </div>
                 );
             }
 
-            if (view === 'create') {
+            if (view === 'create' || view === 'join') {
+                const isCreate = view === 'create';
                 return (
-                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
-                        <LoadingOverlay />
-                        <div className="max-w-md mx-auto">
-                            <div className="bg-white rounded-xl shadow-xl p-5">
-                                <button
-                                    onClick={() => setView('home')}
-                                    className="mb-4 text-gray-600 hover:text-gray-800 flex items-center gap-2"
-                                >
-                                    <X className="w-4 h-4" />
-                                    戻る
-                                </button>
-
-                                <h2 className="text-xl font-bold text-gray-800 mb-4">グループを作成</h2>
-
-                                <div className="space-y-3">
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                                            グループ名
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={formData.groupName}
-                                            onChange={(e) => setFormData({ ...formData, groupName: e.target.value })}
-                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                            placeholder="家族旅行、卒業式など"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                                            パスワード
-                                        </label>
-                                        <input
-                                            type="password"
-                                            value={formData.password}
-                                            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                            placeholder="参加用パスワード"
-                                        />
-                                    </div>
-
-                                    <button
-                                        onClick={createGroup}
-                                        disabled={loading}
-                                        className="w-full py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg font-bold hover:shadow-lg transition-all disabled:opacity-50"
-                                    >
-                                        グループを作成
-                                    </button>
+                    <div className="min-h-screen bg-slate-50 p-4">
+                        <div className="max-w-md mx-auto bg-white p-6 rounded-3xl shadow-xl">
+                            <button onClick={() => setView('home')} className="text-gray-400 mb-6 flex items-center gap-1 text-sm">
+                                <X className="w-4 h-4" /> 閉じる
+                            </button>
+                            <h2 className="text-2xl font-black text-gray-800 mb-6">
+                                {isCreate ? 'グループ作成' : 'グループ参加'}
+                            </h2>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-1 ml-1">グループ名</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-3 bg-gray-100 rounded-xl focus:ring-2 ring-indigo-500 outline-none"
+                                        placeholder="例：夏休みBBQ"
+                                        value={formData.groupName}
+                                        onChange={e => setFormData({...formData, groupName: e.target.value})}
+                                    />
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                );
-            }
-
-            if (view === 'join') {
-                return (
-                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
-                        <div className="max-w-md mx-auto">
-                            <div className="bg-white rounded-xl shadow-xl p-5">
-                                <button
-                                    onClick={() => setView('home')}
-                                    className="mb-4 text-gray-600 hover:text-gray-800 flex items-center gap-2"
-                                >
-                                    <X className="w-4 h-4" />
-                                    戻る
-                                </button>
-
-                                <h2 className="text-xl font-bold text-gray-800 mb-4">グループに参加</h2>
-
-                                <div className="space-y-3">
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                                            グループ名
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={formData.groupName}
-                                            onChange={(e) => setFormData({ ...formData, groupName: e.target.value })}
-                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                            placeholder="グループ名を入力"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                                            パスワード
-                                        </label>
-                                        <input
-                                            type="password"
-                                            value={formData.password}
-                                            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                            placeholder="パスワードを入力"
-                                        />
-                                    </div>
-
-                                    <button
-                                        onClick={joinGroup}
-                                        className="w-full py-3 bg-gradient-to-r from-blue-500 to-cyan-600 text-white rounded-lg font-bold hover:shadow-lg transition-all"
-                                    >
-                                        グループに参加
-                                    </button>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-1 ml-1">パスワード</label>
+                                    <input 
+                                        type="password" 
+                                        className="w-full p-3 bg-gray-100 rounded-xl focus:ring-2 ring-indigo-500 outline-none"
+                                        placeholder="4文字以上の英数字"
+                                        value={formData.password}
+                                        onChange={e => setFormData({...formData, password: e.target.value})}
+                                    />
                                 </div>
+                                <button 
+                                    onClick={isCreate ? createGroup : joinGroup}
+                                    className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200"
+                                >
+                                    {isCreate ? 'グループを立ち上げる' : '参加する'}
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -424,81 +310,54 @@
 
             if (view === 'group' && currentGroup) {
                 return (
-                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-3">
+                    <div className="min-h-screen bg-slate-50">
                         <LoadingOverlay />
-                        <div className="max-w-2xl mx-auto">
-                            <div className="bg-white rounded-xl shadow-xl p-4 mb-4">
-                                <div className="flex justify-between items-center mb-4">
-                                    <div>
-                                        <h1 className="text-lg font-bold text-gray-800">{currentGroup.name}</h1>
-                                        <p className="text-xs text-gray-600">{Object.keys(currentGroup.members).length}人のメンバー</p>
-                                    </div>
-                                    <button
-                                        onClick={leaveGroup}
-                                        className="px-3 py-1.5 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-                                    >
-                                        退室
-                                    </button>
-                                </div>
+                        <nav className="bg-white sticky top-0 z-10 p-4 shadow-sm flex justify-between items-center">
+                            <div>
+                                <h1 className="font-black text-gray-800">{currentGroup.name}</h1>
+                                <p className="text-[10px] text-gray-400">参加中: {formData.uploaderName || 'ゲスト'}</p>
+                            </div>
+                            <button onClick={() => setView('home')} className="text-xs bg-gray-100 px-3 py-2 rounded-lg font-bold text-gray-500">
+                                退出
+                            </button>
+                        </nav>
 
-                                <div className="space-y-2">
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                                            あなたの名前
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={formData.uploaderName}
-                                            onChange={(e) => setFormData({ ...formData, uploaderName: e.target.value })}
-                                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                                            placeholder="山田太郎"
-                                        />
-                                    </div>
-                                    <label className="w-full py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg font-bold cursor-pointer hover:shadow-lg transition-all flex items-center justify-center gap-2">
-                                        <input
-                                            type="file"
-                                            accept="image/*,video/*"
-                                            onChange={uploadFile}
-                                            className="hidden"
-                                            disabled={loading}
-                                        />
-                                        <Upload />
-                                        アップロード (最大2MB)
-                                    </label>
-                                </div>
+                        <div className="max-w-2xl mx-auto p-4 space-y-6">
+                            {/* アップロードエリア */}
+                            <div className="bg-white p-4 rounded-2xl shadow-sm border border-indigo-100">
+                                <input 
+                                    type="text" 
+                                    placeholder="表示名（名前）"
+                                    className="w-full mb-3 p-2 border-b text-sm outline-none focus:border-indigo-500"
+                                    value={formData.uploaderName}
+                                    onChange={e => setFormData({...formData, uploaderName: e.target.value})}
+                                />
+                                <label className="flex flex-col items-center justify-center border-2 border-dashed border-indigo-100 rounded-xl py-8 cursor-pointer hover:bg-indigo-50 transition-colors">
+                                    <Upload />
+                                    <span className="text-xs font-bold text-indigo-600 mt-2">写真・動画を選択 (2MBまで)</span>
+                                    <input type="file" accept="image/*,video/*" className="hidden" onChange={uploadFile} disabled={loading} />
+                                </label>
                             </div>
 
-                            <div className="space-y-4">
-                                {Object.entries(currentGroup.members).map(([memberName, files]) => (
-                                    <div key={memberName} className="bg-white rounded-xl shadow-xl p-4">
-                                        <h2 className="text-base font-bold text-gray-800 mb-3">{memberName}さん</h2>
-                                        <div className="grid grid-cols-2 gap-2">
+                            {/* コンテンツ表示 */}
+                            <div className="space-y-8">
+                                {currentGroup.members && Object.entries(currentGroup.members).map(([name, files]) => (
+                                    <div key={name} className="space-y-3">
+                                        <h3 className="flex items-center gap-2 font-bold text-gray-700 ml-1">
+                                            <div className="w-2 h-6 bg-indigo-500 rounded-full"></div>
+                                            {name} さんの投稿
+                                        </h3>
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                             {files.map((file, idx) => (
-                                                <div key={idx} className="relative group">
+                                                <div key={idx} className="relative aspect-square rounded-xl overflow-hidden bg-gray-200 group shadow-sm">
                                                     {file.type.startsWith('image/') ? (
-                                                        <img
-                                                            src={file.data}
-                                                            alt={file.name}
-                                                            className="w-full h-32 object-cover rounded-lg"
-                                                        />
-                                                    ) : file.type.startsWith('video/') ? (
-                                                        <video
-                                                            src={file.data}
-                                                            controls
-                                                            className="w-full h-32 object-cover rounded-lg bg-black"
-                                                        />
+                                                        <img src={file.data} className="w-full h-full object-cover" loading="lazy" />
                                                     ) : (
-                                                        <div className="w-full h-32 bg-gray-200 rounded-lg flex items-center justify-center">
-                                                            <Video className="w-8 h-8" />
-                                                        </div>
+                                                        <video src={file.data} className="w-full h-full object-cover" />
                                                     )}
-                                                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white p-1 rounded-b-lg text-xs truncate">
-                                                        {file.name}
-                                                    </div>
-                                                    <button
-                                                        onClick={() => deleteFile(memberName, idx)}
-                                                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                        disabled={loading}
+                                                    <button 
+                                                        onClick={() => deleteFile(name, idx)}
+                                                        className="absolute top-2 right-2 bg-black/50 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
                                                     >
                                                         <X className="w-3 h-3" />
                                                     </button>
@@ -507,23 +366,23 @@
                                         </div>
                                     </div>
                                 ))}
+                                
+                                {(!currentGroup.members || Object.keys(currentGroup.members).length === 0) && (
+                                    <div className="text-center py-20">
+                                        <Image className="mx-auto text-gray-200 w-16 h-16 mb-2" />
+                                        <p className="text-gray-400 text-sm">まだ投稿がありません</p>
+                                    </div>
+                                )}
                             </div>
-
-                            {Object.keys(currentGroup.members).length === 0 && (
-                                <div className="bg-white rounded-xl shadow-xl p-8 text-center">
-                                    <Image className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                                    <p className="text-sm text-gray-500">まだ写真や動画がありません</p>
-                                </div>
-                            )}
                         </div>
                     </div>
                 );
             }
-
             return null;
         }
 
-        ReactDOM.render(<PhotoSharingApp />, document.getElementById('root'));
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<PhotoSharingApp />);
     </script>
 </body>
 </html>
